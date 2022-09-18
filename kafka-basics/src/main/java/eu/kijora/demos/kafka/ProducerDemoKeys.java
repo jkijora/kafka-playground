@@ -7,8 +7,8 @@ import org.slf4j.LoggerFactory;
 
 import java.util.Properties;
 
-public class ProducerDemoWithCallback {
-    private static final Logger log = LoggerFactory.getLogger(ProducerDemoWithCallback.class.getSimpleName());
+public class ProducerDemoKeys {
+    private static final Logger log = LoggerFactory.getLogger(ProducerDemoKeys.class.getSimpleName());
 
     public static void main(String[] args) {
 
@@ -23,13 +23,19 @@ public class ProducerDemoWithCallback {
         //create producer
         KafkaProducer<String, String> producer = new KafkaProducer<>(properties);
 
-        //create producer record
-        ProducerRecord<String, String> producerRecord =
-                new ProducerRecord<>("demo_java", "Hello world!!!");
 
         //send data
         //Because of this FOR loop sticky partitioner will play a role batching together the messages
         for (int i = 0; i < 10; i++) {
+
+            String topic = "demo_java";
+            String value = "Hello";
+            //All the messages with the same key go to the same partition
+            String key = "id_" + i;
+            //create producer record
+            ProducerRecord<String, String> producerRecord =
+                    new ProducerRecord<>(topic, key, value);
+
             producer.send(producerRecord, new Callback() {
                 @Override
                 public void onCompletion(RecordMetadata recordMetadata, Exception e) {
@@ -37,6 +43,7 @@ public class ProducerDemoWithCallback {
                     if (e == null) {
                         log.info("\n\nReceived new metadata \n" +
                                 "Topic: " + recordMetadata.topic() + "\n" +
+                                "Key: " + producerRecord.key() + "\n" +
                                 "Partition: " + recordMetadata.partition() + "\n" +
                                 "Offset: " + recordMetadata.offset() + "\n" +
                                 "Timestamp: " + recordMetadata.timestamp());
@@ -45,13 +52,12 @@ public class ProducerDemoWithCallback {
                     }
                 }
             });
-            try{
-                Thread.sleep(1000);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
+//            try{
+//                Thread.sleep(1000);
+//            } catch (InterruptedException e) {
+//                e.printStackTrace();
+//            }
         }
-
         producer.flush();
         //also contains flush
         producer.close();
