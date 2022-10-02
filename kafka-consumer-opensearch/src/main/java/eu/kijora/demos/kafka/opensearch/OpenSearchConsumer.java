@@ -1,5 +1,6 @@
 package eu.kijora.demos.kafka.opensearch;
 
+import com.google.gson.JsonParser;
 import org.apache.http.HttpHost;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
@@ -8,6 +9,8 @@ import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.client.DefaultConnectionKeepAliveStrategy;
 import org.apache.kafka.clients.consumer.*;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.opensearch.action.bulk.BulkRequest;
+import org.opensearch.action.bulk.BulkResponse;
 import org.opensearch.action.index.IndexRequest;
 import org.opensearch.action.index.IndexResponse;
 import org.opensearch.client.RequestOptions;
@@ -27,7 +30,65 @@ import java.util.Properties;
 
 public class OpenSearchConsumer {
 
-    public static RestHighLevelClient createOpenSearchClient() {
+
+    public static void main(String[] args) throws IOException {
+        Logger log = LoggerFactory.getLogger(OpenSearchConsumer.class.getSimpleName());
+
+        //create OpenSearchClient
+        RestHighLevelClient openSearchClient = createOpenSearchClient();
+
+        //create our Kafka Client
+        KafkaConsumer<String, String> consumer = createKafkaConsumer();
+
+        //we need to create an index on OpenSearch if it does not exist already
+        try (openSearchClient; consumer) {
+            boolean indexExists = openSearchClient.indices().exists(new GetIndexRequest("wikimedia"), RequestOptions.DEFAULT);
+            if (!indexExists) {
+                CreateIndexRequest createIndexRequest = new CreateIndexRequest("wikimedia");
+                openSearchClient.indices().create(createIndexRequest, RequestOptions.DEFAULT);
+                log.info("wikimedia index created");
+
+            } else {
+                log.info("wikimedia index does exist");
+            }
+
+            consumer.subscribe(Collections.singletonList("wikimedia.recentchange"));
+
+            while (true) {
+                ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(3000));
+                log.info("received " + records.count() + " records");
+
+                BulkRequest bulkRequest = new BulkRequest();
+
+                for (ConsumerRecord<String, String> record : records) {
+                    try {
+                        consumer.commitSync();
+                        String id = JsonParser.parseString(record.value())
+                                .getAsJsonObject()
+                                .get("meta")
+                                .getAsJsonObject()
+                                .get("id")
+                                .getAsString();
+                        //send the record into OpenSearch
+                        IndexRequest indexRequest = new IndexRequest("wikimedia")
+                                .source(record.value(), XContentType.JSON)
+                                .id(id); //thanks to ID open search will not duplicate the inputs in case of the same one, just update
+//                        IndexResponse response = openSearchClient.index(indexRequest, RequestOptions.DEFAULT); //normal, non-bulk way
+                        bulkRequest.add(indexRequest);
+//                        log.info("inserted 1 document into OS. Response ID: " + response.getId());
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+                if (bulkRequest.numberOfActions() > 0) {
+                    BulkResponse bulkResponse = openSearchClient.bulk(bulkRequest, RequestOptions.DEFAULT);
+                    log.info("Inserted " + bulkResponse.getItems().length + " record(s)");
+                }
+            }
+        }
+    }
+
+    private static RestHighLevelClient createOpenSearchClient() {
         String connString = "http://localhost:9200";
 
         // we build a URI from the connection string
@@ -54,49 +115,6 @@ public class OpenSearchConsumer {
                                             .setKeepAliveStrategy(new DefaultConnectionKeepAliveStrategy())));
         }
         return restHighLevelClient;
-    }
-
-    private static final Logger log = LoggerFactory.getLogger(OpenSearchConsumer.class.getSimpleName());
-
-    public static void main(String[] args) throws IOException {
-
-        //create OpenSearchClient
-        RestHighLevelClient openSearchClient = createOpenSearchClient();
-
-        //create our Kafka Client
-        KafkaConsumer<String, String> consumer = createKafkaConsumer();
-
-        //we need to create an index on OpenSearch if it does not exist already
-        try (openSearchClient; consumer) {
-            boolean indexExists = openSearchClient.indices().exists(new GetIndexRequest("wikimedia"), RequestOptions.DEFAULT);
-            if (!indexExists) {
-                CreateIndexRequest createIndexRequest = new CreateIndexRequest("wikimedia");
-                openSearchClient.indices().create(createIndexRequest, RequestOptions.DEFAULT);
-                log.info("wikimedia index created");
-
-            } else {
-                log.info("wikimedia index does exist");
-            }
-
-            consumer.subscribe(Collections.singletonList("wikimedia.recentchange"));
-
-            while (true) {
-                ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(3000));
-                log.info("received " + records.count() + " records");
-
-                for (ConsumerRecord<String, String> record : records) {
-                    try {
-                        IndexRequest indexRequest = new IndexRequest("wikimedia")
-                                .source(record.value(), XContentType.JSON);
-                        IndexResponse response = openSearchClient.index(indexRequest, RequestOptions.DEFAULT);
-                        log.info("inserted 1 document into OS. Response ID: " + response.getId());
-                    }catch (Exception e)
-                    {
-                        e.printStackTrace();
-                    }
-                }
-            }
-        }
     }
 
     private static KafkaConsumer<String, String> createKafkaConsumer() {
